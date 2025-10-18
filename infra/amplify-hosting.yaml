@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'StratOpsAI Amplify Hosting - Frontend deployment'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  
+  GitHubRepository:
+    Type: String
+    Description: GitHub repository URL (e.g., https://github.com/username/StratOpsAI)
+  
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: GitHub personal access token for repository access
+  
+  ApiEndpoint:
+    Type: String
+    Description: API Gateway endpoint URL from Stack 2
+    Default: ''
+
+Resources:
+  # Amplify App
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: !Sub 'stratopsai-frontend-${Environment}'
+      Description: StratOpsAI Frontend Application
+      Repository: !Ref GitHubRepository
+      AccessToken: !Ref GitHubToken
+      BuildSpec: |
+        version: 1
+        frontend:
+          phases:
+            preBuild:
+              commands:
+                - cd frontend
+                - npm ci
+            build:
+              commands:
+                - npm run build
+          artifacts:
+            baseDirectory: frontend/build
+            files:
+              - '**/*'
+          cache:
+            paths:
+              - frontend/node_modules/**/*
+      EnvironmentVariables:
+        - Name: REACT_APP_API_URL
+          Value: !Ref ApiEndpoint
+        - Name: AMPLIFY_MONOREPO_APP_ROOT
+          Value: frontend
+      CustomRules:
+        - Source: '/<*>'
+          Target: '/index.html'
+          Status: '404-200'
+
+  # Amplify Branch
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      BranchName: !If [IsProd, 'main', 'develop']
+      Description: !Sub 'StratOpsAI ${Environment} branch'
+      EnableAutoBuild: true
+      EnvironmentVariables:
+        - Name: REACT_APP_API_URL
+          Value: !Ref ApiEndpoint
+
+  # Amplify Domain (optional)
+  AmplifyDomain:
+    Type: AWS::Amplify::Domain
+    Condition: HasCustomDomain
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      DomainName: !Ref CustomDomainName
+      SubDomainSettings:
+        - Prefix: !If [IsProd, 'www', !Ref Environment]
+          BranchName: !GetAtt AmplifyBranch.BranchName
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, 'prod']
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, '']]
+
+Parameters:
+  CustomDomainName:
+    Type: String
+    Default: ''
+    Description: Custom domain name (optional, e.g., stratopsai.com)
+
+Outputs:
+  AmplifyAppId:
+    Description: Amplify App ID
+    Value: !GetAtt AmplifyApp.AppId
+    Export:
+      Name: !Sub '${AWS::StackName}-AmplifyAppId'
+
+  AmplifyAppUrl:
+    Description: Amplify App URL
+    Value: !Sub 'https://${AmplifyBranch.BranchName}.${AmplifyApp.DefaultDomain}'
+    Export:
+      Name: !Sub '${AWS::StackName}-AmplifyAppUrl'
+
+  AmplifyConsoleUrl:
+    Description: Amplify Console URL
+    Value: !Sub 'https://console.aws.amazon.com/amplify/home?region=${AWS::Region}#/${AmplifyApp.AppId}'

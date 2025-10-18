@@ -1,0 +1,254 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'StratOpsAI AI Core Stack - SageMaker models and Lambda'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  
+  InfraStackName:
+    Type: String
+    Default: stratopsai-infrastructure
+    Description: Name of the infrastructure stack
+
+Resources:
+  # SageMaker Models
+  SLABreachModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub 'sla-breach-risk-${Environment}'
+      ExecutionRoleArn: !ImportValue 
+        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      PrimaryContainer:
+        Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
+        ModelDataUrl: !Sub 
+          - 's3://${BucketName}/models/sla-breach-risk/model.tar.gz'
+          - BucketName: !ImportValue 
+              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+
+  ChurnPropensityModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub 'churn-propensity-${Environment}'
+      ExecutionRoleArn: !ImportValue 
+        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      PrimaryContainer:
+        Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
+        ModelDataUrl: !Sub 
+          - 's3://${BucketName}/models/churn-propensity/model.tar.gz'
+          - BucketName: !ImportValue 
+              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+
+  UpliftPredictorModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub 'uplift-predictor-${Environment}'
+      ExecutionRoleArn: !ImportValue 
+        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      PrimaryContainer:
+        Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
+        ModelDataUrl: !Sub 
+          - 's3://${BucketName}/models/uplift-predictor/model.tar.gz'
+          - BucketName: !ImportValue 
+              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+
+  # SageMaker Endpoint Configurations
+  SLABreachEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub 'sla-breach-risk-config-${Environment}'
+      ProductionVariants:
+        - ModelName: !GetAtt SLABreachModel.ModelName
+          VariantName: primary
+          InitialInstanceCount: 1
+          InstanceType: ml.t2.medium
+          InitialVariantWeight: 1
+
+  ChurnPropensityEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub 'churn-propensity-config-${Environment}'
+      ProductionVariants:
+        - ModelName: !GetAtt ChurnPropensityModel.ModelName
+          VariantName: primary
+          InitialInstanceCount: 1
+          InstanceType: ml.t2.medium
+          InitialVariantWeight: 1
+
+  UpliftPredictorEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub 'uplift-predictor-config-${Environment}'
+      ProductionVariants:
+        - ModelName: !GetAtt UpliftPredictorModel.ModelName
+          VariantName: primary
+          InitialInstanceCount: 1
+          InstanceType: ml.t2.medium
+          InitialVariantWeight: 1
+
+  # SageMaker Endpoints
+  SLABreachEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub 'sla-breach-risk-${Environment}'
+      EndpointConfigName: !GetAtt SLABreachEndpointConfig.EndpointConfigName
+
+  ChurnPropensityEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub 'churn-propensity-${Environment}'
+      EndpointConfigName: !GetAtt ChurnPropensityEndpointConfig.EndpointConfigName
+
+  UpliftPredictorEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub 'uplift-predictor-${Environment}'
+      EndpointConfigName: !GetAtt UpliftPredictorEndpointConfig.EndpointConfigName
+
+  # Lambda Function
+  AIReasoningFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'stratopsai-ai-reasoning-${Environment}'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !ImportValue 
+        Fn::Sub: '${InfraStackName}-LambdaRole'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'message': 'AI Reasoning function deployed'})
+              }
+      Environment:
+        Variables:
+          SLA_BREACH_ENDPOINT: !GetAtt SLABreachEndpoint.EndpointName
+          CHURN_PROPENSITY_ENDPOINT: !GetAtt ChurnPropensityEndpoint.EndpointName
+          UPLIFT_PREDICTOR_ENDPOINT: !GetAtt UpliftPredictorEndpoint.EndpointName
+          BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
+
+  # API Gateway Resources
+  AIResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !ImportValue 
+        Fn::Sub: '${InfraStackName}-ApiGateway'
+      ParentId: !GetAtt ApiGatewayRootResource.RootResourceId
+      PathPart: ai
+
+  ReasoningResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !ImportValue 
+        Fn::Sub: '${InfraStackName}-ApiGateway'
+      ParentId: !Ref AIResource
+      PathPart: reasoning
+
+  ReasoningMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !ImportValue 
+        Fn::Sub: '${InfraStackName}-ApiGateway'
+      ResourceId: !Ref ReasoningResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AIReasoningFunction.Arn}/invocations'
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AIReasoningFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 
+        - 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*'
+        - ApiId: !ImportValue 
+            Fn::Sub: '${InfraStackName}-ApiGateway'
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ReasoningMethod
+    Properties:
+      RestApiId: !ImportValue 
+        Fn::Sub: '${InfraStackName}-ApiGateway'
+      StageName: !Ref Environment
+
+  # Custom Resource to get API Gateway Root Resource ID
+  ApiGatewayRootResource:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt GetRootResourceFunction.Arn
+      ApiId: !ImportValue 
+        Fn::Sub: '${InfraStackName}-ApiGateway'
+
+  GetRootResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !ImportValue 
+        Fn::Sub: '${InfraStackName}-LambdaRole'
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  api_id = event['ResourceProperties']['ApiId']
+                  client = boto3.client('apigateway')
+                  response = client.get_resources(restApiId=api_id)
+                  
+                  root_id = None
+                  for resource in response['items']:
+                      if resource['path'] == '/':
+                          root_id = resource['id']
+                          break
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                                 {'RootResourceId': root_id})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+Outputs:
+  SLABreachEndpointName:
+    Description: SLA Breach Risk endpoint name
+    Value: !GetAtt SLABreachEndpoint.EndpointName
+
+  ChurnPropensityEndpointName:
+    Description: Churn Propensity endpoint name
+    Value: !GetAtt ChurnPropensityEndpoint.EndpointName
+
+  UpliftPredictorEndpointName:
+    Description: Uplift Predictor endpoint name
+    Value: !GetAtt UpliftPredictorEndpoint.EndpointName
+
+  AIReasoningFunctionName:
+    Description: AI Reasoning Lambda function name
+    Value: !Ref AIReasoningFunction
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 
+      - 'https://${ApiId}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+      - ApiId: !ImportValue 
+          Fn::Sub: '${InfraStackName}-ApiGateway'

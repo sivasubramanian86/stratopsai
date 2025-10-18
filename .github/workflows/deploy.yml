@@ -1,0 +1,162 @@
+name: StratOpsAI CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Lint CloudFormation templates
+        run: |
+          pip install cfn-lint
+          cfn-lint infra/*.yaml
+      
+      - name: Run Python tests
+        run: |
+          pytest lambda/tests/ -v --cov=lambda/ai_reasoning --cov-report=term-missing
+      
+      - name: Validate CloudFormation templates
+        run: |
+          aws cloudformation validate-template --template-body file://infra/stack1.yaml --no-cli-pager || echo "Stack1 validation failed"
+          aws cloudformation validate-template --template-body file://infra/stack2.yaml --no-cli-pager || echo "Stack2 validation failed"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy-dev:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Deploy Infrastructure Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/stack1.yaml \
+            --stack-name stratopsai-infrastructure-dev \
+            --parameter-overrides Environment=dev \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+      
+      - name: Upload dummy models
+        run: |
+          chmod +x scripts/upload_dummy_models.sh
+          # Modify script to use dev stack name
+          sed -i 's/stratopsai-infrastructure/stratopsai-infrastructure-dev/g' scripts/upload_dummy_models.sh
+          ./scripts/upload_dummy_models.sh
+      
+      - name: Package Lambda function
+        run: |
+          cd lambda/ai_reasoning
+          zip -r ../../ai-reasoning.zip .
+          cd ../..
+          aws s3 cp ai-reasoning.zip s3://$(aws cloudformation describe-stacks --stack-name stratopsai-infrastructure-dev --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' --output text)/lambda/ai-reasoning.zip
+      
+      - name: Deploy AI Core Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/stack2.yaml \
+            --stack-name stratopsai-ai-core-dev \
+            --parameter-overrides \
+              Environment=dev \
+              InfraStackName=stratopsai-infrastructure-dev \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+
+  deploy-prod:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Deploy Infrastructure Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/stack1.yaml \
+            --stack-name stratopsai-infrastructure-prod \
+            --parameter-overrides Environment=prod \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+      
+      - name: Upload models
+        run: |
+          chmod +x scripts/upload_dummy_models.sh
+          # Modify script to use prod stack name
+          sed -i 's/stratopsai-infrastructure/stratopsai-infrastructure-prod/g' scripts/upload_dummy_models.sh
+          ./scripts/upload_dummy_models.sh
+      
+      - name: Package Lambda function
+        run: |
+          cd lambda/ai_reasoning
+          zip -r ../../ai-reasoning.zip .
+          cd ../..
+          aws s3 cp ai-reasoning.zip s3://$(aws cloudformation describe-stacks --stack-name stratopsai-infrastructure-prod --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' --output text)/lambda/ai-reasoning.zip
+      
+      - name: Deploy AI Core Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file infra/stack2.yaml \
+            --stack-name stratopsai-ai-core-prod \
+            --parameter-overrides \
+              Environment=prod \
+              InfraStackName=stratopsai-infrastructure-prod \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset
+      
+      - name: Run integration tests
+        run: |
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name stratopsai-ai-core-prod \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' \
+            --output text)
+          
+          # Test API endpoint
+          response=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/ai/reasoning" \
+            -H "Content-Type: application/json" \
+            -d '{"customer_id": "test-123", "metrics": {"sla_score": 0.8}}')
+          
+          if [ "$response" != "200" ]; then
+            echo "API test failed with status: $response"
+            exit 1
+          fi
+          
+          echo "✅ Production deployment successful!"

@@ -1,0 +1,21 @@
+# Core dependencies
+boto3==1.34.0
+botocore==1.34.0
+
+# Testing dependencies
+pytest==7.4.3
+pytest-cov==4.1.0
+moto==4.2.14
+
+# Development dependencies
+cfn-lint==0.83.0
+black==23.11.0
+flake8==6.1.0
+
+# Lambda runtime dependencies (for local testing)
+awslambdaric==2.0.7
+
+# Data processing
+numpy==1.24.4
+scikit-learn==1.3.2
+joblib==1.3.2
