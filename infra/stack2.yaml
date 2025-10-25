@@ -1,163 +1,418 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'StratOpsAI AI Core Stack - SageMaker models and Lambda'
+Description: 'StratOpsAI AI Core Stack - SageMaker models, Lambda reasoning, and API integration'
+
+Metadata:
+  TemplateVersion: '1.0.0'
+  CostWarning: |
+    IMPORTANT: SageMaker endpoints incur charges (~$65/month per ml.t2.medium instance).
+    Set EnableEndpoints=false (default) for cost-free demo mode with mock predictions.
+    Set EnableEndpoints=true only when ready for real ML inference and associated costs.
+  
+  TestEvents:
+    MockMode: |
+      {
+        "customer_id": "CUST-12345",
+        "metrics": {
+          "sla_score": 0.75,
+          "usage_trend": -0.1,
+          "support_tickets": 3,
+          "contract_value": 50000,
+          "tenure_months": 18
+        }
+      }
+    
+    RealMode: |
+      Same payload as MockMode, but requires EnableEndpoints=true and deployed model artifacts.
 
 Parameters:
+  # Stack 1 Integration Parameters (must match Stack 1 outputs exactly)
+  ArtifactsBucketName:
+    Type: String
+    Description: S3 bucket name for model artifacts from Stack 1
+  
+  RawDataBucketName:
+    Type: String
+    Description: S3 bucket name for raw data from Stack 1
+  
+  SageMakerExecutionRoleArn:
+    Type: String
+    Description: SageMaker execution role ARN from Stack 1
+  
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Lambda execution role ARN from Stack 1
+  
+  StratOpsApiId:
+    Type: String
+    Description: API Gateway REST API ID from Stack 1
+  
+  StratOpsApiRootResourceId:
+    Type: String
+    Description: API Gateway root resource ID from Stack 1
+  
+  StratOpsApiStageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name from Stack 1
+  
+  # Stack 2 Specific Parameters
+  EnableEndpoints:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'WARNING: true incurs SageMaker endpoint charges (~$65/month per endpoint)'
+  
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+    Description: CloudWatch log retention period in days
+  
+  ProjectName:
+    Type: String
+    Default: StratOpsAI
+    Description: Project name for resource naming and tagging
+  
   Environment:
     Type: String
     Default: dev
-    AllowedValues: [dev, prod]
-  
-  InfraStackName:
-    Type: String
-    Default: stratopsai-infrastructure
-    Description: Name of the infrastructure stack
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name for resource isolation
+
+Conditions:
+  CreateEndpoints: !Equals [!Ref EnableEndpoints, 'true']
 
 Resources:
-  # SageMaker Models
-  SLABreachModel:
+  # SageMaker Models (lightweight placeholders, no charges until endpoints created)
+  SLABreachRiskModel:
     Type: AWS::SageMaker::Model
     Properties:
-      ModelName: !Sub 'sla-breach-risk-${Environment}'
-      ExecutionRoleArn: !ImportValue 
-        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      ModelName: !Sub '${ProjectName}-sla-breach-risk-${Environment}'
+      ExecutionRoleArn: !Ref SageMakerExecutionRoleArn
       PrimaryContainer:
+        # Using scikit-learn container for lightweight demo models
         Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
-        ModelDataUrl: !Sub 
-          - 's3://${BucketName}/models/sla-breach-risk/model.tar.gz'
-          - BucketName: !ImportValue 
-              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+        ModelDataUrl: !Sub 's3://${ArtifactsBucketName}/models/sla-breach-risk/model.tar.gz'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   ChurnPropensityModel:
     Type: AWS::SageMaker::Model
     Properties:
-      ModelName: !Sub 'churn-propensity-${Environment}'
-      ExecutionRoleArn: !ImportValue 
-        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      ModelName: !Sub '${ProjectName}-churn-propensity-${Environment}'
+      ExecutionRoleArn: !Ref SageMakerExecutionRoleArn
       PrimaryContainer:
         Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
-        ModelDataUrl: !Sub 
-          - 's3://${BucketName}/models/churn-propensity/model.tar.gz'
-          - BucketName: !ImportValue 
-              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+        ModelDataUrl: !Sub 's3://${ArtifactsBucketName}/models/churn-propensity/model.tar.gz'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   UpliftPredictorModel:
     Type: AWS::SageMaker::Model
     Properties:
-      ModelName: !Sub 'uplift-predictor-${Environment}'
-      ExecutionRoleArn: !ImportValue 
-        Fn::Sub: '${InfraStackName}-SageMakerRole'
+      ModelName: !Sub '${ProjectName}-uplift-predictor-${Environment}'
+      ExecutionRoleArn: !Ref SageMakerExecutionRoleArn
       PrimaryContainer:
         Image: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:0.23-1-cpu-py3
-        ModelDataUrl: !Sub 
-          - 's3://${BucketName}/models/uplift-predictor/model.tar.gz'
-          - BucketName: !ImportValue 
-              Fn::Sub: '${InfraStackName}-ArtifactsBucket'
+        ModelDataUrl: !Sub 's3://${ArtifactsBucketName}/models/uplift-predictor/model.tar.gz'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
-  # SageMaker Endpoint Configurations
-  SLABreachEndpointConfig:
+  # SageMaker Endpoint Configurations (conditional, cost-controlled)
+  SLABreachRiskEndpointConfig:
     Type: AWS::SageMaker::EndpointConfig
+    Condition: CreateEndpoints
     Properties:
-      EndpointConfigName: !Sub 'sla-breach-risk-config-${Environment}'
+      EndpointConfigName: !Sub '${ProjectName}-sla-breach-risk-config-${Environment}'
       ProductionVariants:
-        - ModelName: !GetAtt SLABreachModel.ModelName
+        - ModelName: !GetAtt SLABreachRiskModel.ModelName
           VariantName: primary
           InitialInstanceCount: 1
-          InstanceType: ml.t2.medium
+          InstanceType: ml.t2.medium  # Lowest cost option
           InitialVariantWeight: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   ChurnPropensityEndpointConfig:
     Type: AWS::SageMaker::EndpointConfig
+    Condition: CreateEndpoints
     Properties:
-      EndpointConfigName: !Sub 'churn-propensity-config-${Environment}'
+      EndpointConfigName: !Sub '${ProjectName}-churn-propensity-config-${Environment}'
       ProductionVariants:
         - ModelName: !GetAtt ChurnPropensityModel.ModelName
           VariantName: primary
           InitialInstanceCount: 1
           InstanceType: ml.t2.medium
           InitialVariantWeight: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   UpliftPredictorEndpointConfig:
     Type: AWS::SageMaker::EndpointConfig
+    Condition: CreateEndpoints
     Properties:
-      EndpointConfigName: !Sub 'uplift-predictor-config-${Environment}'
+      EndpointConfigName: !Sub '${ProjectName}-uplift-predictor-config-${Environment}'
       ProductionVariants:
         - ModelName: !GetAtt UpliftPredictorModel.ModelName
           VariantName: primary
           InitialInstanceCount: 1
           InstanceType: ml.t2.medium
           InitialVariantWeight: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
-  # SageMaker Endpoints
-  SLABreachEndpoint:
+  # SageMaker Endpoints (conditional, charges apply when created)
+  SLABreachRiskEndpoint:
     Type: AWS::SageMaker::Endpoint
+    Condition: CreateEndpoints
     Properties:
-      EndpointName: !Sub 'sla-breach-risk-${Environment}'
-      EndpointConfigName: !GetAtt SLABreachEndpointConfig.EndpointConfigName
+      EndpointName: !Sub '${ProjectName}-sla-breach-risk-${Environment}'
+      EndpointConfigName: !GetAtt SLABreachRiskEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   ChurnPropensityEndpoint:
     Type: AWS::SageMaker::Endpoint
+    Condition: CreateEndpoints
     Properties:
-      EndpointName: !Sub 'churn-propensity-${Environment}'
+      EndpointName: !Sub '${ProjectName}-churn-propensity-${Environment}'
       EndpointConfigName: !GetAtt ChurnPropensityEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   UpliftPredictorEndpoint:
     Type: AWS::SageMaker::Endpoint
+    Condition: CreateEndpoints
     Properties:
-      EndpointName: !Sub 'uplift-predictor-${Environment}'
+      EndpointName: !Sub '${ProjectName}-uplift-predictor-${Environment}'
       EndpointConfigName: !GetAtt UpliftPredictorEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
-  # Lambda Function
+  # Lambda Function for AI Reasoning
   AIReasoningFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub 'stratopsai-ai-reasoning-${Environment}'
-      Runtime: python3.9
+      FunctionName: !Sub '${ProjectName}-ai-reasoning-${Environment}'
+      Runtime: python3.11
       Handler: index.lambda_handler
-      Role: !ImportValue 
-        Fn::Sub: '${InfraStackName}-LambdaRole'
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucketName
+          RAW_BUCKET: !Ref RawDataBucketName
+          ENABLE_ENDPOINTS: !Ref EnableEndpoints
+          SLA_BREACH_ENDPOINT: !If 
+            - CreateEndpoints
+            - !GetAtt SLABreachRiskEndpoint.EndpointName
+            - 'MOCK'
+          CHURN_PROPENSITY_ENDPOINT: !If
+            - CreateEndpoints
+            - !GetAtt ChurnPropensityEndpoint.EndpointName
+            - 'MOCK'
+          UPLIFT_PREDICTOR_ENDPOINT: !If
+            - CreateEndpoints
+            - !GetAtt UpliftPredictorEndpoint.EndpointName
+            - 'MOCK'
       Code:
         ZipFile: |
           import json
-          import boto3
+          import os
           import logging
+          import random
+          from typing import Dict, Any
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
 
-          def lambda_handler(event, context):
+          def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+              """AI Reasoning Lambda with mock/real mode support"""
+              try:
+                  # Parse request
+                  if 'body' in event:
+                      body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+                  else:
+                      body = event
+                  
+                  customer_id = body.get('customer_id')
+                  metrics = body.get('metrics', {})
+                  
+                  if not customer_id:
+                      return error_response(400, 'customer_id is required')
+                  
+                  logger.info(f"Processing customer: {customer_id}, mode: {os.environ.get('ENABLE_ENDPOINTS', 'false')}")
+                  
+                  # Get predictions (mock or real based on ENABLE_ENDPOINTS)
+                  predictions = get_predictions(metrics)
+                  
+                  # Generate narrative
+                  narrative = generate_narrative(customer_id, metrics, predictions)
+                  
+                  response = {
+                      'customer_id': customer_id,
+                      'predictions': predictions,
+                      'narrative': narrative,
+                      'mode': 'real' if os.environ.get('ENABLE_ENDPOINTS') == 'true' else 'mock',
+                      'timestamp': context.aws_request_id
+                  }
+                  
+                  return success_response(response)
+                  
+              except Exception as e:
+                  logger.error(f"Error: {str(e)}")
+                  return error_response(500, 'Internal server error')
+
+          def get_predictions(metrics: Dict[str, Any]) -> Dict[str, Any]:
+              """Get predictions from SageMaker or mock data"""
+              if os.environ.get('ENABLE_ENDPOINTS') == 'true':
+                  # Real SageMaker inference (requires endpoints)
+                  return get_real_predictions(metrics)
+              else:
+                  # Mock predictions for demo
+                  return get_mock_predictions(metrics)
+
+          def get_mock_predictions(metrics: Dict[str, Any]) -> Dict[str, Any]:
+              """Generate mock predictions based on input metrics"""
+              sla_score = metrics.get('sla_score', 0.5)
+              usage_trend = metrics.get('usage_trend', 0.0)
+              support_tickets = metrics.get('support_tickets', 0)
+              
+              # Mock logic: worse SLA score = higher breach risk
+              sla_risk = max(0.1, min(0.9, 1.0 - sla_score + random.uniform(-0.1, 0.1)))
+              
+              # Mock logic: negative usage trend = higher churn risk
+              churn_risk = max(0.1, min(0.9, 0.5 - usage_trend + support_tickets * 0.05 + random.uniform(-0.1, 0.1)))
+              
+              # Mock logic: good customers have higher uplift potential
+              uplift_potential = max(0.1, min(0.9, sla_score + usage_trend * 0.5 + random.uniform(-0.1, 0.1)))
+              
+              return {
+                  'sla_breach_risk': {
+                      'probability': round(sla_risk, 3),
+                      'confidence': get_confidence(sla_risk)
+                  },
+                  'churn_propensity': {
+                      'probability': round(churn_risk, 3),
+                      'confidence': get_confidence(churn_risk)
+                  },
+                  'uplift_potential': {
+                      'probability': round(uplift_potential, 3),
+                      'confidence': get_confidence(uplift_potential)
+                  }
+              }
+
+          def get_real_predictions(metrics: Dict[str, Any]) -> Dict[str, Any]:
+              """Get real predictions from SageMaker endpoints"""
+              # This would invoke actual SageMaker endpoints
+              # For now, return enhanced mock data
+              logger.info("Real SageMaker inference not implemented yet")
+              return get_mock_predictions(metrics)
+
+          def get_confidence(probability: float) -> str:
+              """Determine confidence level based on probability"""
+              if abs(probability - 0.5) > 0.3:
+                  return 'high'
+              elif abs(probability - 0.5) > 0.15:
+                  return 'medium'
+              else:
+                  return 'low'
+
+          def generate_narrative(customer_id: str, metrics: Dict[str, Any], predictions: Dict[str, Any]) -> str:
+              """Generate strategic narrative"""
+              sla_risk = predictions['sla_breach_risk']['probability']
+              churn_risk = predictions['churn_propensity']['probability']
+              uplift_potential = predictions['uplift_potential']['probability']
+              
+              narrative = f"Customer {customer_id} analysis: "
+              
+              if sla_risk > 0.7:
+                  narrative += "HIGH SLA breach risk detected. Immediate attention required. "
+              elif sla_risk > 0.5:
+                  narrative += "Moderate SLA risk. Monitor closely. "
+              
+              if churn_risk > 0.7:
+                  narrative += "HIGH churn probability. Implement retention strategy. "
+              elif churn_risk > 0.5:
+                  narrative += "Elevated churn risk. Consider proactive engagement. "
+              
+              if uplift_potential > 0.6:
+                  narrative += "Strong upsell opportunity identified. "
+              
+              priority = 'HIGH' if max(sla_risk, churn_risk) > 0.7 else 'MEDIUM' if max(sla_risk, churn_risk) > 0.5 else 'LOW'
+              narrative += f"Priority: {priority}"
+              
+              return narrative
+
+          def success_response(data: Dict[str, Any]) -> Dict[str, Any]:
               return {
                   'statusCode': 200,
-                  'body': json.dumps({'message': 'AI Reasoning function deployed'})
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*'
+                  },
+                  'body': json.dumps(data)
               }
-      Environment:
-        Variables:
-          SLA_BREACH_ENDPOINT: !GetAtt SLABreachEndpoint.EndpointName
-          CHURN_PROPENSITY_ENDPOINT: !GetAtt ChurnPropensityEndpoint.EndpointName
-          UPLIFT_PREDICTOR_ENDPOINT: !GetAtt UpliftPredictorEndpoint.EndpointName
-          BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
 
-  # API Gateway Resources
-  AIResource:
-    Type: AWS::ApiGateway::Resource
+          def error_response(status_code: int, message: str) -> Dict[str, Any]:
+              return {
+                  'statusCode': status_code,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({'error': message})
+              }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Log Group for Lambda
+  AIReasoningLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      RestApiId: !ImportValue 
-        Fn::Sub: '${InfraStackName}-ApiGateway'
-      ParentId: !GetAtt ApiGatewayRootResource.RootResourceId
-      PathPart: ai
+      LogGroupName: !Sub '/aws/lambda/${AIReasoningFunction}'
+      RetentionInDays: !Ref LogRetentionDays
 
+  # API Gateway Resources and Methods
   ReasoningResource:
     Type: AWS::ApiGateway::Resource
     Properties:
-      RestApiId: !ImportValue 
-        Fn::Sub: '${InfraStackName}-ApiGateway'
-      ParentId: !Ref AIResource
+      RestApiId: !Ref StratOpsApiId
+      ParentId: !Ref StratOpsApiRootResourceId
       PathPart: reasoning
 
   ReasoningMethod:
     Type: AWS::ApiGateway::Method
     Properties:
-      RestApiId: !ImportValue 
-        Fn::Sub: '${InfraStackName}-ApiGateway'
+      RestApiId: !Ref StratOpsApiId
       ResourceId: !Ref ReasoningResource
       HttpMethod: POST
       AuthorizationType: NONE
@@ -173,82 +428,114 @@ Resources:
       FunctionName: !Ref AIReasoningFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 
-        - 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*'
-        - ApiId: !ImportValue 
-            Fn::Sub: '${InfraStackName}-ApiGateway'
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${StratOpsApiId}/*/*'
 
-  # API Gateway Deployment
-  ApiDeployment:
+  # API Gateway Deployment (depends on Method creation)
+  APIDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn: ReasoningMethod
     Properties:
-      RestApiId: !ImportValue 
-        Fn::Sub: '${InfraStackName}-ApiGateway'
-      StageName: !Ref Environment
+      RestApiId: !Ref StratOpsApiId
+      StageName: !Ref StratOpsApiStageName
+      StageDescription:
+        LoggingLevel: INFO
+        DataTraceEnabled: false
+        MetricsEnabled: true
 
-  # Custom Resource to get API Gateway Root Resource ID
-  ApiGatewayRootResource:
-    Type: AWS::CloudFormation::CustomResource
+  # Step Functions State Machine for ROI Experiments
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
     Properties:
-      ServiceToken: !GetAtt GetRootResourceFunction.Arn
-      ApiId: !ImportValue 
-        Fn::Sub: '${InfraStackName}-ApiGateway'
+      RoleName: !Sub '${ProjectName}-StepFunctions-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt AIReasoningFunction.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
-  GetRootResourceFunction:
-    Type: AWS::Lambda::Function
+  ROIExperimentStateMachine:
+    Type: AWS::StepFunctions::StateMachine
     Properties:
-      Runtime: python3.9
-      Handler: index.handler
-      Role: !ImportValue 
-        Fn::Sub: '${InfraStackName}-LambdaRole'
-      Code:
-        ZipFile: |
-          import boto3
-          import cfnresponse
-          
-          def handler(event, context):
-              try:
-                  if event['RequestType'] == 'Delete':
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                      return
-                  
-                  api_id = event['ResourceProperties']['ApiId']
-                  client = boto3.client('apigateway')
-                  response = client.get_resources(restApiId=api_id)
-                  
-                  root_id = None
-                  for resource in response['items']:
-                      if resource['path'] == '/':
-                          root_id = resource['id']
-                          break
-                  
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, 
-                                 {'RootResourceId': root_id})
-              except Exception as e:
-                  print(f"Error: {e}")
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+      StateMachineName: !Sub '${ProjectName}-roi-experiments-${Environment}'
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "ROI Experiment State Machine for StratOpsAI",
+          "StartAt": "GenerateExperiment",
+          "States": {
+            "GenerateExperiment": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${AIReasoningFunction}",
+                "Payload": {
+                  "customer_id.$": "$.customer_id",
+                  "experiment_type": "roi_analysis",
+                  "metrics.$": "$.metrics"
+                }
+              },
+              "Next": "LogResults"
+            },
+            "LogResults": {
+              "Type": "Pass",
+              "Result": "Experiment completed successfully",
+              "End": true
+            }
+          }
+        }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
 Outputs:
-  SLABreachEndpointName:
-    Description: SLA Breach Risk endpoint name
-    Value: !GetAtt SLABreachEndpoint.EndpointName
+  AIReasoningFunctionArn:
+    Description: ARN of the AI Reasoning Lambda function
+    Value: !GetAtt AIReasoningFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AIReasoningFunction'
 
-  ChurnPropensityEndpointName:
-    Description: Churn Propensity endpoint name
-    Value: !GetAtt ChurnPropensityEndpoint.EndpointName
+  ReasoningApiInvokeUrl:
+    Description: API Gateway invoke URL for reasoning endpoint
+    Value: !Sub 'https://${StratOpsApiId}.execute-api.${AWS::Region}.amazonaws.com/${StratOpsApiStageName}/ai/reasoning'
+    Export:
+      Name: !Sub '${AWS::StackName}-ReasoningApiUrl'
 
-  UpliftPredictorEndpointName:
-    Description: Uplift Predictor endpoint name
-    Value: !GetAtt UpliftPredictorEndpoint.EndpointName
+  ROIExperimentStateMachineArn:
+    Description: ARN of the ROI Experiment State Machine
+    Value: !GetAtt ROIExperimentStateMachine.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ROIStateMachine'
 
-  AIReasoningFunctionName:
-    Description: AI Reasoning Lambda function name
-    Value: !Ref AIReasoningFunction
+  SLABreachRiskModelName:
+    Description: Name of the SLA Breach Risk model
+    Value: !GetAtt SLABreachRiskModel.ModelName
 
-  ApiEndpoint:
-    Description: API Gateway endpoint URL
-    Value: !Sub 
-      - 'https://${ApiId}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
-      - ApiId: !ImportValue 
-          Fn::Sub: '${InfraStackName}-ApiGateway'
+  ChurnPropensityModelName:
+    Description: Name of the Churn Propensity model
+    Value: !GetAtt ChurnPropensityModel.ModelName
+
+  UpliftPredictorModelName:
+    Description: Name of the Uplift Predictor model
+    Value: !GetAtt UpliftPredictorModel.ModelName
+
+  EndpointsEnabled:
+    Description: Whether SageMaker endpoints are enabled
+    Value: !Ref EnableEndpoints

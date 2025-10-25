@@ -1,92 +1,107 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'StratOpsAI Infrastructure Stack - Base resources'
+Description: 'StratOpsAI Infrastructure Stack - Base resources for AI platform'
+
+Metadata:
+  TemplateVersion: '1.0.0'
+  README: |
+    What this stack provides:
+    - S3 buckets for model artifacts and raw data storage
+    - IAM roles for SageMaker and Lambda execution
+    - API Gateway foundation with /ai root resource
+    - Kinesis stream for data ingestion (1 shard, free-tier)
+    - Glue Data Catalog and Athena workgroup for analytics
+    
+    What Stack 2 will consume:
+    - Bucket names and ARNs for model storage
+    - IAM role ARNs for service execution
+    - API Gateway ID and root resource for endpoint creation
+    - Stream name for data ingestion integration
 
 Parameters:
+  ProjectName:
+    Type: String
+    Default: StratOpsAI
+    Description: Project name for resource naming and tagging
+  
   Environment:
     Type: String
     Default: dev
-    AllowedValues: [dev, prod]
+    AllowedValues: [dev, staging, prod]
+    Description: Environment name for resource isolation
+  
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+    Description: CloudWatch log retention period in days
 
 Resources:
   # S3 Buckets
   ArtifactsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
     Properties:
-      BucketName: !Sub 'stratopsai-artifacts-${Environment}-${AWS::AccountId}'
+      BucketName: !Sub '${ProjectName}-artifacts-${Environment}-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   RawDataBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
     Properties:
-      BucketName: !Sub 'stratopsai-rawdata-${Environment}-${AWS::AccountId}'
+      BucketName: !Sub '${ProjectName}-rawdata-${Environment}-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-
-  # VPC
-  VPC:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsHostnames: true
-      EnableDnsSupport: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
       Tags:
-        - Key: Name
-          Value: !Sub 'stratopsai-vpc-${Environment}'
-
-  # Private Subnets
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub 'stratopsai-private-1-${Environment}'
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [1, !GetAZs '']
-      Tags:
-        - Key: Name
-          Value: !Sub 'stratopsai-private-2-${Environment}'
-
-  # Security Group
-  SageMakerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for SageMaker endpoints
-      VpcId: !Ref VPC
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
-  # Kinesis Stream
-  DataStream:
-    Type: AWS::Kinesis::Stream
-    Properties:
-      Name: !Sub 'stratopsai-data-stream-${Environment}'
-      ShardCount: 1
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   # IAM Roles
   SageMakerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'StratOpsAI-SageMaker-Role-${Environment}'
+      RoleName: !Sub '${ProjectName}-SageMaker-${Environment}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -95,24 +110,39 @@ Resources:
               Service: sagemaker.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerReadOnly
       Policies:
-        - PolicyName: S3Access
+        - PolicyName: S3ArtifactsAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                  - s3:PutObject
+                  - s3:ListBucket
                 Resource:
                   - !Sub '${ArtifactsBucket}/*'
-                  - !Sub '${RawDataBucket}/*'
+                  - !GetAtt ArtifactsBucket.Arn
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'StratOpsAI-Lambda-Role-${Environment}'
+      RoleName: !Sub '${ProjectName}-Lambda-${Environment}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -131,6 +161,19 @@ Resources:
                 Action:
                   - sagemaker:InvokeEndpoint
                 Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*'
+        - PolicyName: S3BucketAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${ArtifactsBucket}/*'
+                  - !GetAtt ArtifactsBucket.Arn
+                  - !Sub '${RawDataBucket}/*'
+                  - !GetAtt RawDataBucket.Arn
         - PolicyName: BedrockAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -139,65 +182,156 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource: '*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
 
   # API Gateway
-  ApiGateway:
+  StratOpsAPI:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: !Sub 'stratopsai-api-${Environment}'
-      Description: StratOpsAI API Gateway
+      Name: !Sub '${ProjectName}-API-${Environment}'
+      Description: !Sub 'StratOpsAI REST API for ${Environment} environment'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  AIResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref StratOpsAPI
+      ParentId: !GetAtt StratOpsAPI.RootResourceId
+      PathPart: ai
+
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: AIResource
+    Properties:
+      RestApiId: !Ref StratOpsAPI
+      StageName: prod
+      StageDescription:
+        LoggingLevel: INFO
+        DataTraceEnabled: false
+        MetricsEnabled: true
+        ThrottlingRateLimit: 100
+        ThrottlingBurstLimit: 200
+
+  # Kinesis Stream
+  IngestionStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${ProjectName}-ingestion-${Environment}'
+      ShardCount: 1
+      RetentionPeriodHours: 24
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Glue Data Catalog
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: stratopsaidb
+        Description: !Sub 'Data catalog for ${ProjectName} ${Environment} environment'
+
+  # Athena Workgroup
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: StratOpsAIWG
+      Description: !Sub 'Athena workgroup for ${ProjectName} analytics'
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${ArtifactsBucket}/athena-results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetrics: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Log Groups
+  SageMakerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/sagemaker/${ProjectName}-${Environment}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}'
+      RetentionInDays: !Ref LogRetentionDays
 
 Outputs:
   ArtifactsBucketName:
-    Description: Name of the artifacts S3 bucket
+    Description: Name of the S3 bucket for model artifacts
     Value: !Ref ArtifactsBucket
     Export:
       Name: !Sub '${AWS::StackName}-ArtifactsBucket'
 
   RawDataBucketName:
-    Description: Name of the raw data S3 bucket
+    Description: Name of the S3 bucket for raw data
     Value: !Ref RawDataBucket
     Export:
       Name: !Sub '${AWS::StackName}-RawDataBucket'
 
-  VPCId:
-    Description: VPC ID
-    Value: !Ref VPC
-    Export:
-      Name: !Sub '${AWS::StackName}-VPC'
-
-  PrivateSubnetIds:
-    Description: Private subnet IDs
-    Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
-    Export:
-      Name: !Sub '${AWS::StackName}-PrivateSubnets'
-
-  SecurityGroupId:
-    Description: Security group ID for SageMaker
-    Value: !Ref SageMakerSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-SecurityGroup'
-
-  SageMakerRoleArn:
-    Description: SageMaker execution role ARN
+  SageMakerExecutionRoleArn:
+    Description: ARN of the SageMaker execution role
     Value: !GetAtt SageMakerExecutionRole.Arn
     Export:
       Name: !Sub '${AWS::StackName}-SageMakerRole'
 
-  LambdaRoleArn:
-    Description: Lambda execution role ARN
+  LambdaExecutionRoleArn:
+    Description: ARN of the Lambda execution role
     Value: !GetAtt LambdaExecutionRole.Arn
     Export:
       Name: !Sub '${AWS::StackName}-LambdaRole'
 
-  ApiGatewayId:
-    Description: API Gateway ID
-    Value: !Ref ApiGateway
+  StratOpsApiId:
+    Description: ID of the API Gateway REST API
+    Value: !Ref StratOpsAPI
     Export:
-      Name: !Sub '${AWS::StackName}-ApiGateway'
+      Name: !Sub '${AWS::StackName}-ApiId'
 
-  DataStreamName:
-    Description: Kinesis data stream name
-    Value: !Ref DataStream
+  StratOpsApiRootResourceId:
+    Description: Root resource ID of the API Gateway
+    Value: !GetAtt StratOpsAPI.RootResourceId
     Export:
-      Name: !Sub '${AWS::StackName}-DataStream'
+      Name: !Sub '${AWS::StackName}-ApiRootResourceId'
+
+  StratOpsApiStageName:
+    Description: API Gateway stage name
+    Value: prod
+
+  IngestionStreamName:
+    Description: Name of the Kinesis ingestion stream
+    Value: !Ref IngestionStream
+    Export:
+      Name: !Sub '${AWS::StackName}-IngestionStream'
+
+  GlueDatabaseName:
+    Description: Name of the Glue database
+    Value: stratopsaidb
+
+  AthenaWorkgroupName:
+    Description: Name of the Athena workgroup
+    Value: StratOpsAIWG
