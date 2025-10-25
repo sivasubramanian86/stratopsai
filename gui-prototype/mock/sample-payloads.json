@@ -1,0 +1,72 @@
+{
+  "aiReasoningRequest": {
+    "customer_id": "CUST-12345",
+    "priority": "high",
+    "severity": "medium", 
+    "customer_tier": "premium",
+    "resolution_time_hours": 4,
+    "issue_category": "technical"
+  },
+  
+  "aiReasoningResponse": {
+    "customer_id": "CUST-12345",
+    "predictions": {
+      "sla_breach_risk": {
+        "probability": 0.753,
+        "confidence": "high"
+      },
+      "churn_propensity": {
+        "probability": 0.421,
+        "confidence": "medium"
+      },
+      "uplift_potential": {
+        "probability": 0.687,
+        "confidence": "high"
+      }
+    },
+    "narrative": "Customer CUST-12345 analysis: ⚠️ Moderate SLA risk. Monitor closely. 🟢 Low churn risk. Customer appears stable. 💰 Strong upsell opportunity identified. Priority: MEDIUM",
+    "mode": "simulation",
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  },
+
+  "dashboardMetrics": {
+    "kpis": {
+      "totalCustomers": 12847,
+      "atRiskCustomers": 1284,
+      "slaBreaches": 23,
+      "churnRate": 5.2,
+      "upliftOpportunities": 847,
+      "avgResolutionTime": 4.2
+    },
+    "alerts": [
+      {
+        "id": 1,
+        "type": "critical",
+        "title": "High SLA Breach Risk",
+        "message": "Customer CUST-9847 showing 89% SLA breach probability",
+        "timestamp": "2 minutes ago"
+      }
+    ]
+  },
+
+  "roiExperiment": {
+    "id": 1,
+    "name": "Proactive Outreach Campaign",
+    "status": "running",
+    "description": "Testing proactive customer outreach for high churn risk segments",
+    "metrics": {
+      "participants": 1250,
+      "conversionRate": 23.4,
+      "roi": 340,
+      "confidence": 94
+    },
+    "startDate": "2024-01-15",
+    "endDate": "2024-02-15"
+  },
+
+  "errorResponse": {
+    "error": "Invalid customer_id format",
+    "code": "VALIDATION_ERROR",
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  }
+}
