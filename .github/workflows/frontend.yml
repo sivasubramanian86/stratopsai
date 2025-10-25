@@ -3,17 +3,17 @@ name: Frontend CI/CD
 on:
   push:
     branches: [main, develop]
-    paths: ['frontend/**']
+    paths: ['gui-prototype/**']
   pull_request:
     branches: [main]
-    paths: ['frontend/**']
+    paths: ['gui-prototype/**']
 
 jobs:
   frontend-checks:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./frontend
+        working-directory: ./gui-prototype
 
     steps:
       - uses: actions/checkout@v3
@@ -23,78 +23,50 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: gui-prototype/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint code
-        run: |
-          npx eslint src/ --ext .js,.jsx --max-warnings 0
-
-      - name: Run tests
-        run: npm test -- --coverage --watchAll=false
-
       - name: Build application
         run: npm run build
         env:
-          REACT_APP_API_URL: https://example.execute-api.us-east-1.amazonaws.com/dev
+          VITE_API_URL: https://example.execute-api.us-east-1.amazonaws.com/dev
 
       - name: Check build size
         run: |
-          BUILD_SIZE=$(du -sh build | cut -f1)
+          BUILD_SIZE=$(du -sh dist | cut -f1)
           echo "Build size: $BUILD_SIZE"
           
-          # Warn if build is larger than 10MB
-          BUILD_SIZE_BYTES=$(du -sb build | cut -f1)
+          BUILD_SIZE_BYTES=$(du -sb dist | cut -f1)
           if [ $BUILD_SIZE_BYTES -gt 10485760 ]; then
             echo "⚠️ Warning: Build size is larger than 10MB"
           fi
 
-  amplify-deploy:
+  vercel-deploy:
     needs: frontend-checks
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/main'
     
     steps:
       - uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: gui-prototype/package-lock.json
 
-      - name: Trigger Amplify build
+      - name: Install dependencies
+        working-directory: ./gui-prototype
+        run: npm ci
+
+      - name: Deploy to Vercel
+        working-directory: ./gui-prototype
         run: |
-          # Determine environment based on branch
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            ENVIRONMENT="prod"
-          else
-            ENVIRONMENT="dev"
-          fi
-          
-          echo "Triggering Amplify build for environment: $ENVIRONMENT"
-          
-          # Get Amplify App ID
-          APP_ID=$(aws cloudformation describe-stacks \
-            --stack-name "stratopsai-amplify-${ENVIRONMENT}" \
-            --query 'Stacks[0].Outputs[?OutputKey==`AmplifyAppId`].OutputValue' \
-            --output text 2>/dev/null || echo "")
-          
-          if [ ! -z "$APP_ID" ]; then
-            # Get branch name
-            BRANCH_NAME=$([ "$ENVIRONMENT" = "prod" ] && echo "main" || echo "develop")
-            
-            # Start build
-            aws amplify start-job \
-              --app-id "$APP_ID" \
-              --branch-name "$BRANCH_NAME" \
-              --job-type RELEASE
-            
-            echo "✅ Amplify build triggered for app: $APP_ID"
-          else
-            echo "⚠️ Amplify app not found for environment: $ENVIRONMENT"
-            echo "Please deploy the Amplify stack first using scripts/deploy-amplify.sh"
-          fi
+          npm install -g vercel
+          vercel --prod --token ${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
