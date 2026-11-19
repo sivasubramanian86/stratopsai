@@ -1,14 +1,9 @@
 name: StratOpsAI CI/CD
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main, develop]
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE*'
-      - 'docs/**'
-  pull_request:
-    branches: [main]
+    branches: [develop]
     paths-ignore:
       - '**.md'
       - 'LICENSE*'
@@ -103,7 +98,7 @@ jobs:
   deploy-prod:
     needs: lint-and-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && secrets.AWS_ACCESS_KEY_ID != ''
+    if: github.ref == 'refs/heads/main'
     environment: production
     
     steps:
