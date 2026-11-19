@@ -103,7 +103,7 @@ jobs:
   deploy-prod:
     needs: lint-and-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && secrets.AWS_ACCESS_KEY_ID != ''
     environment: production
     
     steps:
